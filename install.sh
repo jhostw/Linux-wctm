@@ -4,52 +4,201 @@
 # GRUB + btrfs (@ @home @snapshots @var_cache @var_log) + /efi separado
 # Locale: en_US.UTF-8  |  Timezone: America/Lima  |  CPU: AMD (amd-ucode)
 #
-# Correr esto DESDE el ISO live de Arch Linux (booteado en modo UEFI).
+# Ejecutar desde el ISO live de Arch Linux en modo UEFI.
 #
-# NOTA SOBRE REANUDACIÓN: el progreso se guarda en /root/.arch-install-state,
-# que vive en la RAM del ISO live. Si el script falla o lo cierras y lo vuelves
-# a correr SIN reiniciar la laptop, detecta en qué paso te quedaste y te deja
-# continuar. Si reinicias la laptop por completo durante la instalación, ese
-# archivo de estado se pierde (porque el ISO live es efímero) y hay que
-# empezar de cero.
+# REANUDACIÓN: el progreso se guarda en /root/.arch-install-state (RAM del ISO).
+# Si el script falla y lo vuelves a correr SIN reiniciar, detecta el paso anterior.
+# Si reinicias el ISO por completo, el estado se pierde y hay que empezar de cero.
 #
 set -euo pipefail
 
-# ---------- Colores / helpers ----------
-C_RESET='\033[0m'; C_BOLD='\033[1m'; C_GREEN='\033[32m'; C_RED='\033[31m'; C_YELLOW='\033[33m'; C_BLUE='\033[34m'
+# ══════════════════════════════════════════════════════
+#  COLORES Y ESTILOS
+# ══════════════════════════════════════════════════════
+R='\033[0m'         # reset
+BOLD='\033[1m'
+DIM='\033[2m'
+C_CYAN='\033[36m'
+C_BLUE='\033[34m'
+C_GREEN='\033[32m'
+C_YELLOW='\033[33m'
+C_RED='\033[31m'
+C_WHITE='\033[97m'
+C_GRAY='\033[90m'
+BG_BLUE='\033[44m'
+BG_CYAN='\033[46m'
 
-info()  { echo -e "${C_BLUE}==>${C_RESET} ${C_BOLD}$*${C_RESET}"; }
-ok()    { echo -e "${C_GREEN}✔${C_RESET} $*"; }
-warn()  { echo -e "${C_YELLOW}⚠${C_RESET} $*"; }
-fail()  { echo -e "${C_RED}✘ $*${C_RESET}"; exit 1; }
+# ══════════════════════════════════════════════════════
+#  HELPERS DE IMPRESIÓN
+# ══════════════════════════════════════════════════════
+info()    { echo -e " ${BOLD}${C_CYAN}::${R} ${BOLD}$*${R}"; }
+ok()      { echo -e " ${C_GREEN}✔${R}  $*"; }
+warn()    { echo -e " ${C_YELLOW}▲${R}  $*"; }
+fail()    { echo -e " ${C_RED}✘${R}  ${BOLD}$*${R}"; exit 1; }
+step()    { echo -e "\n ${BG_BLUE}${C_WHITE}${BOLD}  $*  ${R}"; echo; }
+label()   { echo -e " ${C_GRAY}──────────────────────────────────────────${R}"; }
+newline() { echo; }
 
-require_root() {
-    [[ $EUID -eq 0 ]] || fail "Este script debe correr como root (en el ISO live ya lo eres por defecto)."
+# Limpia la pantalla y muestra el banner superior con progreso
+screen() {
+    local title="${1:-}"
+    local step_n="${2:-}"
+    local step_total="${3:-}"
+    clear
+    echo -e "${BOLD}${C_CYAN}"
+    echo "  ╔═══════════════════════════════════════════╗"
+    echo "  ║       Arch Linux Installer  v1.0          ║"
+    echo "  ║   btrfs · GRUB · UEFI · AMD · zsh         ║"
+    echo "  ╚═══════════════════════════════════════════╝${R}"
+    if [[ -n "$title" ]]; then
+        echo -e "  ${DIM}${C_GRAY}$(date '+%H:%M:%S')${R}  ${BOLD}$title${R}"
+    fi
+    if [[ -n "$step_n" ]]; then
+        # Barra de progreso simple
+        local filled=$(( step_n * 20 / step_total ))
+        local empty=$(( 20 - filled ))
+        local bar="${C_CYAN}${BOLD}"
+        for ((i=0; i<filled; i++)); do bar+="█"; done
+        bar+="${C_GRAY}${DIM}"
+        for ((i=0; i<empty; i++)); do bar+="░"; done
+        bar+="${R}"
+        echo -e "  Paso ${step_n}/${step_total}  [${bar}]"
+    fi
+    echo
 }
 
-# ---------- Estado / reanudación ----------
-# Pasos en orden: 1=PARTITION 2=FORMAT 3=PACSTRAP 4=FSTAB 5=CHROOT 6=DONE
+# Prompt estándar con valor por defecto resaltado
+ask() {
+    # ask "Label" "default_val" VARNAME
+    local label_="$1"
+    local default_="$2"
+    local varname="$3"
+    local hint=""
+    [[ -n "$default_" ]] && hint=" ${C_GRAY}[Enter = ${default_}]${R}"
+    echo -ne " ${BOLD}${label_}${R}${hint}: "
+    local val
+    read -r val
+    printf -v "$varname" '%s' "${val:-$default_}"
+}
+
+# Prompt de contraseña (sin eco, confirma)
+ask_password() {
+    local prompt="$1"
+    local varname="$2"
+    local p1 p2
+    while true; do
+        echo -ne " ${BOLD}${prompt}${R}: "
+        read -rsp "" p1; echo
+        echo -ne " ${C_GRAY}Confirmar ${prompt}${R}: "
+        read -rsp "" p2; echo
+        if [[ -z "$p1" ]]; then
+            warn "La contraseña no puede estar vacía. Intenta de nuevo."
+            echo
+            continue
+        fi
+        if [[ "$p1" != "$p2" ]]; then
+            warn "Las contraseñas no coinciden. Intenta de nuevo."
+            echo
+            continue
+        fi
+        printf -v "$varname" '%s' "$p1"
+        ok "Contraseña establecida."
+        echo
+        break
+    done
+}
+
+# ══════════════════════════════════════════════════════
+#  MENÚ INTERACTIVO CON FLECHAS
+#  Uso: arrow_menu "Título" items_array_name → escribe índice en ARROW_RESULT
+# ══════════════════════════════════════════════════════
+ARROW_RESULT=0
+arrow_menu() {
+    local title="$1"
+    local -n _items="$2"   # nameref al array
+    local selected=0
+    local count="${#_items[@]}"
+    local key esc
+
+    tput civis 2>/dev/null || true   # ocultar cursor
+
+    _draw_menu() {
+        # Reposicionamos: subimos $count líneas + 1 del título si ya se imprimió
+        local move_up=$(( count + 2 ))
+        tput cuu "$move_up" 2>/dev/null || true
+        echo -e " ${BOLD}$title${R}"
+        label
+        for ((i=0; i<count; i++)); do
+            if [[ $i -eq $selected ]]; then
+                echo -e "  ${BG_CYAN}${C_WHITE}${BOLD} ❯ ${_items[$i]} ${R}"
+            else
+                echo -e "   ${C_GRAY}${_items[$i]}${R}"
+            fi
+        done
+        echo
+    }
+
+    # Primera impresión (sin subir cursor)
+    echo -e " ${BOLD}$title${R}"
+    label
+    for ((i=0; i<count; i++)); do
+        if [[ $i -eq $selected ]]; then
+            echo -e "  ${BG_CYAN}${C_WHITE}${BOLD} ❯ ${_items[$i]} ${R}"
+        else
+            echo -e "   ${C_GRAY}${_items[$i]}${R}"
+        fi
+    done
+    echo
+
+    while true; do
+        IFS= read -rsn1 key
+        if [[ "$key" == $'\x1b' ]]; then
+            IFS= read -rsn1 -t 0.05 esc
+            if [[ "$esc" == "[" ]]; then
+                IFS= read -rsn1 -t 0.05 esc
+                case "$esc" in
+                    A) (( selected > 0 )) && (( selected-- )) ;;        # arriba
+                    B) (( selected < count - 1 )) && (( selected++ )) ;; # abajo
+                esac
+            fi
+            _draw_menu
+        elif [[ "$key" == "" ]]; then   # Enter
+            break
+        fi
+    done
+
+    tput cnorm 2>/dev/null || true   # mostrar cursor de nuevo
+    ARROW_RESULT=$selected
+}
+
+# ══════════════════════════════════════════════════════
+#  ESTADO / REANUDACIÓN
+# ══════════════════════════════════════════════════════
 STATE_FILE="/root/.arch-install-state"
 LAST_STEP=0
 RESUMED=0
 
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
-        # shellcheck disable=SC1090
         source "$STATE_FILE"
         LAST_STEP="${STEP:-0}"
         if [[ "$LAST_STEP" -gt 0 ]]; then
-            warn "Se detectó una instalación previa interrumpida (último paso completado: $LAST_STEP/6)."
+            screen "Instalación anterior detectada"
+            warn "Instalación interrumpida en el paso ${LAST_STEP}/6."
             warn "Disco guardado: ${DISK:-desconocido}"
-            read -rp "¿Continuar desde donde quedó? [S/n] (n = borrar todo y empezar de cero): " resume
-            if [[ "${resume,,}" == "n" ]]; then
+            newline
+            local opts=("Continuar desde donde quedó (paso $((LAST_STEP + 1))/6)" "Borrar todo y empezar de cero")
+            arrow_menu "¿Qué deseas hacer?" opts
+            if [[ "$ARROW_RESULT" -eq 1 ]]; then
                 rm -f "$STATE_FILE"
                 LAST_STEP=0
                 DISK=""; EFI_PART=""; ROOT_PART=""
-                ok "Estado anterior descartado. Empezamos de cero."
+                ok "Estado anterior descartado."
+                sleep 1
             else
                 RESUMED=1
                 ok "Reanudando desde el paso $((LAST_STEP + 1))."
+                sleep 1
             fi
         fi
     fi
@@ -65,55 +214,72 @@ ROOT_PART=${ROOT_PART}
 EOF
 }
 
-# ---------- 1. Verificaciones previas ----------
-check_uefi() {
-    info "Verificando modo de arranque..."
-    if [[ -d /sys/firmware/efi/efivars ]]; then
-        ok "Sistema booteado en modo UEFI."
-    else
-        fail "No estás en modo UEFI. Este script asume UEFI + GRUB. Reinicia booteando el ISO en modo UEFI."
-    fi
+# ══════════════════════════════════════════════════════
+#  VERIFICACIONES PREVIAS
+# ══════════════════════════════════════════════════════
+require_root() {
+    [[ $EUID -eq 0 ]] || fail "Ejecuta este script como root."
 }
 
-check_internet() {
+check_uefi() {
+    screen "Verificaciones del sistema" 1 6
+    info "Verificando modo de arranque..."
+    if [[ -d /sys/firmware/efi/efivars ]]; then
+        ok "UEFI detectado."
+    else
+        fail "No estás en modo UEFI. Reinicia el ISO en modo UEFI."
+    fi
+
     info "Verificando conexión a internet..."
     if ping -c 1 -W 3 archlinux.org &>/dev/null; then
         ok "Conexión a internet detectada."
-        return
-    fi
-    warn "No se detectó conexión a internet."
-    echo "Si usas cable, revisa que esté bien conectado; a veces solo falta esperar al DHCP."
-    read -rp "Presiona ENTER para reintentar, o escribe 'wifi' para configurar WiFi con iwctl: " resp
-    if [[ "${resp,,}" == "wifi" ]]; then
-        iwctl
-    fi
-    if ping -c 1 -W 3 archlinux.org &>/dev/null; then
-        ok "Conexión a internet detectada."
     else
-        fail "Sigue sin haber internet. Revisa el cable/red y vuelve a correr el script."
+        warn "Sin conexión a internet."
+        echo
+        local opts=("Reintentar (tengo cable/DHCP)" "Abrir iwctl (WiFi)")
+        arrow_menu "¿Cómo conectarte?" opts
+        if [[ "$ARROW_RESULT" -eq 1 ]]; then
+            tput cnorm 2>/dev/null || true
+            iwctl
+        fi
+        if ping -c 1 -W 3 archlinux.org &>/dev/null; then
+            ok "Conexión a internet detectada."
+        else
+            fail "Sigue sin haber internet. Revisa el cable/red y vuelve a correr el script."
+        fi
     fi
-}
 
-sync_clock() {
     info "Sincronizando reloj del sistema..."
     timedatectl set-ntp true
     ok "Reloj sincronizado."
+    sleep 0.8
 }
 
-# ---------- 2. Selección de disco ----------
+# ══════════════════════════════════════════════════════
+#  SELECCIÓN DE DISCO
+# ══════════════════════════════════════════════════════
 select_disk() {
     if [[ -n "${DISK:-}" && "$RESUMED" -eq 1 ]]; then
-        ok "Usando disco de la instalación anterior: $DISK"
+        screen "Disco" 2 6
+        ok "Reutilizando disco de la instalación anterior: ${BOLD}$DISK${R}"
         [[ -b "$DISK" ]] || fail "El disco guardado '$DISK' ya no existe. Empieza de cero."
+        sleep 1
         return
     fi
-    info "Discos disponibles:"
-    lsblk -dpno NAME,SIZE,MODEL | grep -v "loop"
-    echo
-    read -rp "Escribe el disco a usar (ej. /dev/nvme0n1): " DISK
+
+    screen "Selección de disco" 2 6
+
+    # Construir lista de discos (excluye loops y ROM)
+    mapfile -t DISK_LIST < <(lsblk -dpno NAME,SIZE,MODEL | grep -v "loop" | grep -v "rom")
+    if [[ ${#DISK_LIST[@]} -eq 0 ]]; then
+        fail "No se detectaron discos físicos."
+    fi
+
+    arrow_menu "Selecciona el disco de instalación (↑↓ para mover, Enter para elegir)" DISK_LIST
+    local chosen="${DISK_LIST[$ARROW_RESULT]}"
+    DISK="$(echo "$chosen" | awk '{print $1}')"
     [[ -b "$DISK" ]] || fail "El dispositivo '$DISK' no existe."
 
-    # Detectar sufijo de partición: nvme/mmcblk usan 'p1','p2'; sdX usa '1','2'
     if [[ "$DISK" =~ nvme || "$DISK" =~ mmcblk ]]; then
         PART_SUFFIX="p"
     else
@@ -122,218 +288,285 @@ select_disk() {
     EFI_PART="${DISK}${PART_SUFFIX}1"
     ROOT_PART="${DISK}${PART_SUFFIX}2"
 
-    warn "Se usará: $DISK"
-    warn "  Partición EFI : $EFI_PART (1G)"
-    warn "  Partición raíz: $ROOT_PART (resto del disco, btrfs)"
+    newline
+    ok "Disco seleccionado: ${BOLD}$DISK${R}"
+    echo -e "  ${C_GRAY}├── EFI  : ${EFI_PART}  (1G, FAT32)${R}"
+    echo -e "  ${C_GRAY}└── ROOT : ${ROOT_PART}  (resto, btrfs + 5 subvolúmenes)${R}"
+    sleep 1
 }
 
-# ---------- 3. Preguntas interactivas ----------
+# ══════════════════════════════════════════════════════
+#  CONFIGURACIÓN INTERACTIVA
+# ══════════════════════════════════════════════════════
 BASE_PACKAGES="base linux linux-firmware amd-ucode btrfs-progs grub efibootmgr networkmanager sudo vim nano neovim zsh base-devel"
+EXTRA_PACKAGES=""
+HOSTNAME=""
+USERNAME=""
+ROOT_PASSWORD=""
+USER_PASSWORD=""
+TIMEZONE="America/Lima"
+LOCALE="en_US.UTF-8"
+KEYMAP="us"
 
 ask_config() {
-    read -rp "Hostname (nombre de la máquina): " HOSTNAME
-    [[ -n "$HOSTNAME" ]] || fail "El hostname no puede estar vacío."
+    # -- Hostname --
+    screen "Configuración  ·  Hostname" 3 6
+    info "¿Cómo se llamará esta máquina en la red?"
+    newline
+    while true; do
+        ask "Hostname" "archbox" HOSTNAME
+        [[ -n "$HOSTNAME" ]] && break
+        warn "El hostname no puede estar vacío."
+    done
 
-    read -rp "Nombre de usuario: " USERNAME
-    [[ -n "$USERNAME" ]] || fail "El usuario no puede estar vacío."
+    # -- Usuario --
+    screen "Configuración  ·  Usuario" 3 6
+    info "Cuenta de usuario principal (se añade al grupo wheel → sudo)."
+    newline
+    while true; do
+        ask "Nombre de usuario" "" USERNAME
+        [[ -n "$USERNAME" ]] && break
+        warn "El nombre de usuario no puede estar vacío."
+    done
 
-    ask_password() {
-        local prompt="$1"
-        local p1 p2
-        while true; do
-            read -rsp "$prompt: " p1; echo
-            read -rsp "Confirma $prompt: " p2; echo
-            if [[ -z "$p1" ]]; then
-                warn "La contraseña no puede estar vacía. Intenta de nuevo."
-                continue
-            fi
-            if [[ "$p1" != "$p2" ]]; then
-                warn "Las contraseñas no coinciden. Intenta de nuevo."
-                continue
-            fi
-            printf -v "$2" '%s' "$p1"
-            break
-        done
-    }
-
+    # -- Contraseña root --
+    screen "Configuración  ·  Contraseña de root" 3 6
+    info "Contraseña para el usuario ${BOLD}root${R}."
+    newline
     ask_password "Contraseña de root" ROOT_PASSWORD
-    ask_password "Contraseña de usuario '$USERNAME'" USER_PASSWORD
 
-    read -rp "Timezone [America/Lima]: " TIMEZONE
-    TIMEZONE="${TIMEZONE:-America/Lima}"
-    [[ -f "/usr/share/zoneinfo/$TIMEZONE" ]] || fail "Timezone inválido: $TIMEZONE"
+    # -- Contraseña usuario --
+    screen "Configuración  ·  Contraseña de usuario" 3 6
+    info "Contraseña para el usuario ${BOLD}${USERNAME}${R}."
+    newline
+    ask_password "Contraseña de $USERNAME" USER_PASSWORD
 
-    read -rp "Locale [en_US.UTF-8]: " LOCALE
-    LOCALE="${LOCALE:-en_US.UTF-8}"
+    # -- Timezone --
+    screen "Configuración  ·  Zona horaria" 3 6
+    info "Timezone del sistema."
+    newline
+    while true; do
+        ask "Timezone" "America/Lima" TIMEZONE
+        if [[ -f "/usr/share/zoneinfo/$TIMEZONE" ]]; then
+            ok "Timezone válido: $TIMEZONE"
+            break
+        else
+            warn "Timezone '$TIMEZONE' no encontrado. Ej: America/Lima, America/Bogota"
+        fi
+    done
 
-    KEYMAP="us"
+    # -- Locale --
+    screen "Configuración  ·  Locale" 3 6
+    info "Idioma del sistema (locale)."
+    newline
+    ask "Locale" "en_US.UTF-8" LOCALE
+    ok "Locale: $LOCALE"
 
-    echo
-    echo "Paquetes base que se instalarán: $BASE_PACKAGES"
-    read -rp "¿Paquetes extra a instalar? (separados por espacio, ENTER para ninguno): " EXTRA_PACKAGES
-    EXTRA_PACKAGES="${EXTRA_PACKAGES:-}"
+    # -- Paquetes extra --
+    screen "Configuración  ·  Paquetes" 3 6
+    info "Paquetes base que se instalarán:"
+    newline
+    echo -e "  ${C_GRAY}$BASE_PACKAGES${R}"
+    newline
+    info "¿Quieres agregar paquetes extra ahora?"
+    echo -e "  ${C_GRAY}Ejemplos: git htop firefox alacritty${R}"
+    newline
+    ask "Paquetes extra" "(ninguno)" _extra_raw
+    if [[ "$_extra_raw" == "(ninguno)" || -z "$_extra_raw" ]]; then
+        EXTRA_PACKAGES=""
+    else
+        EXTRA_PACKAGES="$_extra_raw"
+    fi
+    sleep 0.5
 }
 
-# ---------- 4. Resumen y confirmación ----------
+# ══════════════════════════════════════════════════════
+#  RESUMEN Y CONFIRMACIÓN
+# ══════════════════════════════════════════════════════
 show_summary() {
-    echo
-    echo -e "${C_BOLD}====== RESUMEN DE INSTALACIÓN ======${C_RESET}"
-    echo "Disco a usar          : $DISK  $( [[ "$LAST_STEP" -lt 1 ]] && echo '(TODO el contenido se borrará)' || echo '(reutilizando particiones existentes)' )"
-    echo "  -> EFI  : $EFI_PART   1G    FAT32"
-    echo "  -> ROOT : $ROOT_PART  resto btrfs (@ @home @snapshots @var_cache @var_log)"
-    echo "Hostname               : $HOSTNAME"
-    echo "Usuario                : $USERNAME (con sudo, shell por defecto: zsh)"
-    echo "Timezone               : $TIMEZONE"
-    echo "Locale                 : $LOCALE"
-    echo "Teclado                : $KEYMAP"
-    echo "Swap                   : Ninguno"
-    echo "Bootloader             : GRUB (UEFI), ESP montado en /efi"
-    echo "Microcódigo CPU        : amd-ucode (AMD Ryzen)"
-    echo "Paquetes base          : $BASE_PACKAGES"
-    [[ -n "$EXTRA_PACKAGES" ]] && echo "Paquetes extra         : $EXTRA_PACKAGES"
-    echo -e "${C_BOLD}=====================================${C_RESET}"
-    echo
+    screen "Resumen de instalación" 4 6
+
+    local destruir
+    if [[ "$LAST_STEP" -lt 1 ]]; then
+        destruir="${C_RED}${BOLD}SE BORRARÁ TODO${R}"
+    else
+        destruir="${C_YELLOW}Reutilizando particiones existentes${R}"
+    fi
+
+    echo -e "  ${BOLD}${C_CYAN}DISCO${R}"
+    echo -e "    Dispositivo  : ${BOLD}$DISK${R}  ($destruir)"
+    echo -e "    ${C_GRAY}├── EFI  : $EFI_PART  (1G, FAT32)${R}"
+    echo -e "    ${C_GRAY}└── ROOT : $ROOT_PART  (btrfs → @ @home @snapshots @var_cache @var_log)${R}"
+    newline
+    echo -e "  ${BOLD}${C_CYAN}SISTEMA${R}"
+    echo -e "    Hostname     : ${BOLD}$HOSTNAME${R}"
+    echo -e "    Usuario      : ${BOLD}$USERNAME${R}  (sudo via wheel, shell: zsh)"
+    echo -e "    Timezone     : $TIMEZONE"
+    echo -e "    Locale       : $LOCALE"
+    echo -e "    Bootloader   : GRUB UEFI  (ESP en /efi)"
+    echo -e "    Microcódigo  : amd-ucode (AMD Ryzen)"
+    newline
+    echo -e "  ${BOLD}${C_CYAN}PAQUETES${R}"
+    echo -e "    ${C_GRAY}$BASE_PACKAGES${R}"
+    [[ -n "$EXTRA_PACKAGES" ]] && echo -e "    ${C_YELLOW}Extra: $EXTRA_PACKAGES${R}"
+    newline
+    label
+    newline
 
     if [[ "$LAST_STEP" -lt 1 ]]; then
-        warn "Esto BORRARÁ TODO el contenido de $DISK de forma irreversible."
-    else
-        warn "Se reutilizarán las particiones ya creadas en una corrida anterior. No se volverá a borrar el disco."
+        warn "Esta acción ${BOLD}borrará de forma permanente${R} todo el contenido de ${BOLD}$DISK${R}."
+        newline
     fi
-    read -rp "Escribe CONFIRMAR (en mayúsculas) para continuar: " CONFIRM
-    [[ "$CONFIRM" == "CONFIRMAR" ]] || fail "Cancelado por el usuario."
+
+    local opts=("Sí, comenzar instalación" "No, cancelar y salir")
+    arrow_menu "¿Confirmas que todo está correcto?" opts
+    [[ "$ARROW_RESULT" -eq 0 ]] || fail "Instalación cancelada por el usuario."
 }
 
-# ---------- 5. Particionado ----------
+# ══════════════════════════════════════════════════════
+#  EJECUCIÓN: PARTICIONADO
+# ══════════════════════════════════════════════════════
 do_partition() {
     if [[ "$LAST_STEP" -ge 1 ]]; then
-        ok "[Paso 1/6] Particionado ya completado anteriormente, se omite."
+        ok "[1/6] Particionado ya completado, se omite."
         return
     fi
-    info "[Paso 1/6] Borrando tabla de particiones de $DISK..."
+    screen "Particionado del disco" 1 6
+    info "Borrando tabla de particiones..."
     sgdisk --zap-all "$DISK"
-    # Limpieza extra de firmas de filesystem que sgdisk a veces no toca
-    wipefs -a "$DISK"
+    wipefs -a "$DISK"     # limpia firmas de FS que sgdisk a veces deja
 
     info "Creando particiones..."
-    sgdisk -n1:0:+1G   -t1:ef00 -c1:"EFI System" "$DISK"
-    sgdisk -n2:0:0     -t2:8300 -c2:"Linux filesystem" "$DISK"
-
+    sgdisk -n1:0:+1G  -t1:ef00 -c1:"EFI System"       "$DISK"
+    sgdisk -n2:0:0    -t2:8300 -c2:"Linux filesystem"  "$DISK"
     partprobe "$DISK"
     sleep 2
-    ok "Particiones creadas."
+    ok "Particiones creadas:"
     lsblk "$DISK"
     save_state 1
+    sleep 1
 }
 
-# ---------- 6. Formateo y subvolúmenes btrfs ----------
+# ══════════════════════════════════════════════════════
+#  EJECUCIÓN: FORMATEO Y SUBVOLÚMENES
+# ══════════════════════════════════════════════════════
 do_format_and_subvolumes() {
     if [[ "$LAST_STEP" -ge 2 ]]; then
-        ok "[Paso 2/6] Formateo ya completado anteriormente, remontando subvolúmenes existentes..."
+        ok "[2/6] Formateo ya completado, remontando..."
         remount_existing
         return
     fi
-    info "[Paso 2/6] Formateando partición EFI ($EFI_PART) como FAT32..."
+    screen "Formateo y subvolúmenes btrfs" 2 6
+
+    info "Formateando EFI ($EFI_PART) → FAT32..."
     mkfs.fat -F32 -n EFI "$EFI_PART"
 
-    info "Formateando partición raíz ($ROOT_PART) como btrfs..."
+    info "Formateando ROOT ($ROOT_PART) → btrfs..."
     mkfs.btrfs -f -L arch "$ROOT_PART"
 
     info "Creando subvolúmenes..."
     mount "$ROOT_PART" /mnt
-    btrfs subvolume create /mnt/@
-    btrfs subvolume create /mnt/@home
-    btrfs subvolume create /mnt/@snapshots
-    btrfs subvolume create /mnt/@var_cache
-    btrfs subvolume create /mnt/@var_log
+    for sv in @ @home @snapshots @var_cache @var_log; do
+        btrfs subvolume create "/mnt/$sv"
+        ok "  subvolumen creado: $sv"
+    done
     umount /mnt
-    ok "Subvolúmenes creados: @ @home @snapshots @var_cache @var_log"
 
     mount_all
-    ok "Todo montado en /mnt"
+    ok "Sistema de archivos listo:"
     findmnt /mnt -R
     save_state 2
+    sleep 1
 }
 
 mount_all() {
-    info "Montando subvolúmenes..."
+    info "Montando subvolúmenes en /mnt..."
     local opts="noatime,compress=zstd,ssd,space_cache=v2"
-    mount -o "${opts},subvol=@" "$ROOT_PART" /mnt
+    mount -o "${opts},subvol=@"          "$ROOT_PART" /mnt
     mkdir -p /mnt/{home,.snapshots,var/cache,var/log,efi}
-    mount -o "${opts},subvol=@home" "$ROOT_PART" /mnt/home
+    mount -o "${opts},subvol=@home"      "$ROOT_PART" /mnt/home
     mount -o "${opts},subvol=@snapshots" "$ROOT_PART" /mnt/.snapshots
     mount -o "${opts},subvol=@var_cache" "$ROOT_PART" /mnt/var/cache
-    mount -o "${opts},subvol=@var_log" "$ROOT_PART" /mnt/var/log
+    mount -o "${opts},subvol=@var_log"   "$ROOT_PART" /mnt/var/log
     mount "$EFI_PART" /mnt/efi
 }
 
-# Usado cuando reanudamos después del paso 2: si /mnt no está montado, lo remonta
-# usando los subvolúmenes YA EXISTENTES (no los vuelve a crear).
 remount_existing() {
     if findmnt /mnt &>/dev/null; then
-        ok "/mnt ya está montado, se mantiene como está."
+        ok "/mnt ya montado."
         return
     fi
     mount_all
-    ok "Subvolúmenes existentes remontados en /mnt."
-    findmnt /mnt -R
+    ok "Subvolúmenes remontados."
 }
 
-# ---------- 7. pacstrap ----------
+# ══════════════════════════════════════════════════════
+#  EJECUCIÓN: PACSTRAP
+# ══════════════════════════════════════════════════════
 do_pacstrap() {
     remount_existing
     if [[ "$LAST_STEP" -ge 3 ]]; then
-        ok "[Paso 3/6] pacstrap ya completado anteriormente, se omite."
+        ok "[3/6] pacstrap ya completado, se omite."
         return
     fi
-    info "[Paso 3/6] Instalando sistema base con pacstrap (esto toma un rato)..."
-    # pacstrap/pacman son seguros de re-ejecutar: si se cae a mitad de descarga,
-    # al volver a correr este paso retoma donde quedó sin reinstalar lo ya hecho.
+    screen "Instalando sistema base" 3 6
+    info "Ejecutando pacstrap (puede tomar varios minutos según tu conexión)..."
+    newline
+    # SC2086: expansión intencional de $EXTRA_PACKAGES sin comillas para palabras múltiples
     # shellcheck disable=SC2086
     pacstrap -K /mnt $BASE_PACKAGES $EXTRA_PACKAGES
     ok "Sistema base instalado."
     save_state 3
+    sleep 1
 }
 
-# ---------- 8. fstab ----------
+# ══════════════════════════════════════════════════════
+#  EJECUCIÓN: FSTAB
+# ══════════════════════════════════════════════════════
 do_genfstab() {
     remount_existing
     if [[ "$LAST_STEP" -ge 4 ]]; then
-        ok "[Paso 4/6] fstab ya generado anteriormente, se omite."
+        ok "[4/6] fstab ya generado, se omite."
         return
     fi
-    info "[Paso 4/6] Generando fstab..."
+    screen "Generando fstab" 4 6
+    info "Generando /etc/fstab con UUIDs..."
     genfstab -U /mnt >> /mnt/etc/fstab
-    ok "fstab generado."
+    ok "fstab generado:"
+    newline
     cat /mnt/etc/fstab
     save_state 4
+    sleep 1
 }
 
-# ---------- 9. Configuración en chroot ----------
+# ══════════════════════════════════════════════════════
+#  EJECUCIÓN: CONFIGURACIÓN EN CHROOT
+# ══════════════════════════════════════════════════════
 do_chroot_config() {
     remount_existing
     if [[ "$LAST_STEP" -ge 5 ]]; then
-        ok "[Paso 5/6] Configuración de chroot ya completada anteriormente, se omite."
+        ok "[5/6] Chroot ya configurado, se omite."
         return
     fi
-    info "[Paso 5/6] Configurando sistema dentro del chroot..."
+    screen "Configurando sistema (chroot)" 5 6
 
     cat > /mnt/root/chroot-setup.sh <<CHROOT_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Timezone
+echo "==> Timezone..."
 ln -sf "/usr/share/zoneinfo/${TIMEZONE}" /etc/localtime
 hwclock --systohc
 
-# Locale
+echo "==> Locale..."
 sed -i "s/^#${LOCALE} UTF-8/${LOCALE} UTF-8/" /etc/locale.gen
 locale-gen
 echo "LANG=${LOCALE}" > /etc/locale.conf
 
-# Keymap
+echo "==> Keymap..."
 echo "KEYMAP=${KEYMAP}" > /etc/vconsole.conf
 
-# Hostname
+echo "==> Hostname y hosts..."
 echo "${HOSTNAME}" > /etc/hostname
 cat > /etc/hosts <<HOSTS_EOF
 127.0.0.1   localhost
@@ -341,53 +574,75 @@ cat > /etc/hosts <<HOSTS_EOF
 127.0.1.1   ${HOSTNAME}.localdomain ${HOSTNAME}
 HOSTS_EOF
 
-# Root password
+echo "==> Contraseña de root..."
 echo "root:${ROOT_PASSWORD}" | chpasswd
 
-# Usuario, con zsh como shell por defecto
+echo "==> Creando usuario ${USERNAME}..."
 useradd -m -G wheel -s /usr/bin/zsh "${USERNAME}"
 echo "${USERNAME}:${USER_PASSWORD}" | chpasswd
+
+echo "==> Habilitando sudo para wheel..."
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# NetworkManager
+echo "==> Habilitando NetworkManager..."
 systemctl enable NetworkManager
 
-# GRUB (UEFI, ESP en /efi). amd-ucode ya quedó instalado por pacstrap,
-# grub-mkconfig detecta /boot/amd-ucode.img automáticamente.
+echo "==> Instalando GRUB (UEFI, /efi)..."
+# amd-ucode ya está instalado por pacstrap; grub-mkconfig lo detecta solo.
 grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
+
+echo "==> Chroot listo."
 CHROOT_EOF
 
     chmod +x /mnt/root/chroot-setup.sh
     arch-chroot /mnt /root/chroot-setup.sh
     rm /mnt/root/chroot-setup.sh
-    ok "Configuración de chroot completada (timezone, locale, hostname, usuario, zsh, GRUB)."
+    ok "Sistema configurado: timezone, locale, hostname, usuario, GRUB."
     save_state 5
+    sleep 1
 }
 
-# ---------- 10. Cierre ----------
+# ══════════════════════════════════════════════════════
+#  CIERRE
+# ══════════════════════════════════════════════════════
 do_finish() {
-    info "[Paso 6/6] Desmontando particiones..."
+    screen "¡Instalación completa!" 6 6
+
+    ok "Desmontando particiones..."
     umount -R /mnt
-    save_state 6
     rm -f "$STATE_FILE"
-    ok "Instalación completa."
+
     echo
-    read -rp "¿Reiniciar ahora? [s/N]: " reboot_now
-    if [[ "${reboot_now,,}" == "s" ]]; then
+    echo -e "  ${BOLD}${C_GREEN}✔  Arch Linux instalado exitosamente.${R}"
+    echo
+    echo -e "  ${C_GRAY}Resumen final:${R}"
+    echo -e "  ${C_GRAY}  Hostname  : ${BOLD}${C_WHITE}${HOSTNAME}${R}"
+    echo -e "  ${C_GRAY}  Usuario   : ${BOLD}${C_WHITE}${USERNAME}${R}  (sudo, zsh)"
+    echo -e "  ${C_GRAY}  Disco     : ${BOLD}${C_WHITE}${DISK}${R}"
+    echo -e "  ${C_GRAY}  Bootloader: GRUB  (ESP en /efi)${R}"
+    echo
+    label
+    newline
+
+    local opts=("Reiniciar ahora (quita el USB antes)" "Salir sin reiniciar")
+    arrow_menu "¿Qué deseas hacer?" opts
+    if [[ "$ARROW_RESULT" -eq 0 ]]; then
+        ok "Reiniciando en 3 segundos..."
+        sleep 3
         reboot
     else
-        warn "Recuerda quitar el medio de instalación y reiniciar manualmente con: reboot"
+        warn "No olvides quitar el USB y reiniciar con: ${BOLD}reboot${R}"
     fi
 }
 
-# ---------- MAIN ----------
+# ══════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════
 main() {
     require_root
     load_state
     check_uefi
-    check_internet
-    sync_clock
     select_disk
     ask_config
     show_summary
