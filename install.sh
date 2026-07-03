@@ -35,34 +35,33 @@ info()    { echo -e " ${BOLD}${C_CYAN}::${R} ${BOLD}$*${R}"; }
 ok()      { echo -e " ${C_GREEN}✔${R}  $*"; }
 warn()    { echo -e " ${C_YELLOW}▲${R}  $*"; }
 fail()    { echo -e " ${C_RED}✘${R}  ${BOLD}$*${R}"; exit 1; }
-step()    { echo -e "\n ${BG_BLUE}${C_WHITE}${BOLD}  $*  ${R}"; echo; }
-label()   { echo -e " ${C_GRAY}──────────────────────────────────────────${R}"; }
+label()   { echo -e " ${C_GRAY}──────────────────────────────────────────────${R}"; }
 newline() { echo; }
 
-# Limpia la pantalla y muestra el banner superior con progreso
+# Limpia la pantalla y muestra el banner + barra de progreso
 screen() {
     local title="${1:-}"
     local step_n="${2:-}"
     local step_total="${3:-}"
     clear
+    # El box tiene 47 chars de ancho interior para que las dos líneas queden iguales
     echo -e "${BOLD}${C_CYAN}"
-    echo "  ╔═══════════════════════════════════════════╗"
-    echo "  ║       Arch Linux Installer  v1.0          ║"
-    echo "  ║   btrfs · GRUB · UEFI · AMD · zsh         ║"
-    echo "  ╚═══════════════════════════════════════════╝${R}"
+    echo "  ╔═════════════════════════════════════════════╗"
+    echo "  ║       Arch Linux Installer  v1.0            ║"
+    echo "  ║    btrfs · GRUB · UEFI · AMD · zsh          ║"
+    echo "  ╚═════════════════════════════════════════════╝${R}"
     if [[ -n "$title" ]]; then
-        echo -e "  ${DIM}${C_GRAY}$(date '+%H:%M:%S')${R}  ${BOLD}$title${R}"
+        echo -e "  ${DIM}${C_GRAY}$(date '+%H:%M:%S')${R}  ${BOLD}${title}${R}"
     fi
-    if [[ -n "$step_n" ]]; then
-        # Barra de progreso simple
-        local filled=$(( step_n * 20 / step_total ))
-        local empty=$(( 20 - filled ))
-        local bar="${C_CYAN}${BOLD}"
+    if [[ -n "$step_n" && -n "$step_total" ]]; then
+        local bar_width=24
+        local filled=$(( step_n * bar_width / step_total ))
+        local empty=$(( bar_width - filled ))
+        local bar=""
+        local i
         for ((i=0; i<filled; i++)); do bar+="█"; done
-        bar+="${C_GRAY}${DIM}"
         for ((i=0; i<empty; i++)); do bar+="░"; done
-        bar+="${R}"
-        echo -e "  Paso ${step_n}/${step_total}  [${bar}]"
+        echo -e "  ${C_GRAY}Paso ${step_n}/${step_total}${R}  ${C_CYAN}${BOLD}${bar}${R}"
     fi
     echo
 }
@@ -109,66 +108,87 @@ ask_password() {
 }
 
 # ══════════════════════════════════════════════════════
-#  MENÚ INTERACTIVO CON FLECHAS
-#  Uso: arrow_menu "Título" items_array_name → escribe índice en ARROW_RESULT
+#  MENÚ INTERACTIVO CON FLECHAS + NÚMERO
+#  Uso: arrow_menu "Título" items_array_name → resultado en ARROW_RESULT
+#
+#  Controles:
+#    ↑ / ↓   — mover selección
+#    1-9     — seleccionar directamente por número
+#    Enter   — confirmar
 # ══════════════════════════════════════════════════════
 ARROW_RESULT=0
 arrow_menu() {
-    local title="$1"
-    local -n _items="$2"   # nameref al array
-    local selected=0
-    local count="${#_items[@]}"
-    local key esc
+    local _am_title="$1"
+    local -n _am_items="$2"   # nameref al array (bash 4.3+)
+    local _am_sel=0
+    local _am_count="${#_am_items[@]}"
 
     tput civis 2>/dev/null || true   # ocultar cursor
 
-    _draw_menu() {
-        # Reposicionamos: subimos $count líneas + 1 del título si ya se imprimió
-        local move_up=$(( count + 2 ))
-        tput cuu "$move_up" 2>/dev/null || true
-        echo -e " ${BOLD}$title${R}"
+    # Dibuja el menú desde la posición guardada con tput sc.
+    # Usa printf con ancho fijo para sobreescribir limpiamente líneas anteriores
+    # (evita artefactos del color de fondo al cambiar de ítem).
+    _am_draw() {
+        tput rc 2>/dev/null || true   # restaurar posición guardada
+        echo -e " ${BOLD}${_am_title}${R}"
         label
-        for ((i=0; i<count; i++)); do
-            if [[ $i -eq $selected ]]; then
-                echo -e "  ${BG_CYAN}${C_WHITE}${BOLD} ❯ ${_items[$i]} ${R}"
+        local _i
+        for (( _i=0; _i<_am_count; _i++ )); do
+            local _num=$(( _i + 1 ))
+            if [[ $_i -eq $_am_sel ]]; then
+                # Padding de 70 chars para sobreescribir líneas más largas previas
+                printf "  ${BG_CYAN}${C_WHITE}${BOLD} %d ❯ %-65s${R}\n" \
+                    "$_num" "${_am_items[$_i]}"
             else
-                echo -e "   ${C_GRAY}${_items[$i]}${R}"
+                printf "  ${C_GRAY}  %d   %-65s${R}\n" \
+                    "$_num" "${_am_items[$_i]}"
             fi
         done
         echo
     }
 
-    # Primera impresión (sin subir cursor)
-    echo -e " ${BOLD}$title${R}"
-    label
-    for ((i=0; i<count; i++)); do
-        if [[ $i -eq $selected ]]; then
-            echo -e "  ${BG_CYAN}${C_WHITE}${BOLD} ❯ ${_items[$i]} ${R}"
-        else
-            echo -e "   ${C_GRAY}${_items[$i]}${R}"
-        fi
-    done
-    echo
+    tput sc 2>/dev/null || true   # guardar posición del cursor ANTES de dibujar
+    _am_draw
 
+    local _key _esc
     while true; do
-        IFS= read -rsn1 key
-        if [[ "$key" == $'\x1b' ]]; then
-            IFS= read -rsn1 -t 0.05 esc
-            if [[ "$esc" == "[" ]]; then
-                IFS= read -rsn1 -t 0.05 esc
-                case "$esc" in
-                    A) (( selected > 0 )) && (( selected-- )) ;;        # arriba
-                    B) (( selected < count - 1 )) && (( selected++ )) ;; # abajo
-                esac
-            fi
-            _draw_menu
-        elif [[ "$key" == "" ]]; then   # Enter
-            break
-        fi
+        IFS= read -rsn1 _key
+        case "$_key" in
+            $'\x1b')   # secuencia de escape (flechas)
+                IFS= read -rsn1 -t 0.15 _esc || continue
+                if [[ "$_esc" == "[" ]]; then
+                    IFS= read -rsn1 -t 0.15 _esc || continue
+                    case "$_esc" in
+                        A)  # flecha arriba
+                            if (( _am_sel > 0 )); then
+                                _am_sel=$(( _am_sel - 1 ))
+                            fi
+                            _am_draw
+                            ;;
+                        B)  # flecha abajo
+                            if (( _am_sel < _am_count - 1 )); then
+                                _am_sel=$(( _am_sel + 1 ))
+                            fi
+                            _am_draw
+                            ;;
+                    esac
+                fi
+                ;;
+            [1-9])   # selección por número (1-indexed)
+                local _num_sel=$(( _key - 1 ))
+                if (( _num_sel >= 0 && _num_sel < _am_count )); then
+                    _am_sel=$_num_sel
+                    _am_draw
+                fi
+                ;;
+            "")   # Enter — confirmar
+                break
+                ;;
+        esac
     done
 
-    tput cnorm 2>/dev/null || true   # mostrar cursor de nuevo
-    ARROW_RESULT=$selected
+    tput cnorm 2>/dev/null || true   # restaurar cursor visible
+    ARROW_RESULT=$_am_sel
 }
 
 # ══════════════════════════════════════════════════════
