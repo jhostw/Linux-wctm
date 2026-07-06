@@ -15,18 +15,18 @@ set -euo pipefail
 # ══════════════════════════════════════════════════════
 #  COLORES Y ESTILOS
 # ══════════════════════════════════════════════════════
-R='\033[0m'         # reset
-BOLD='\033[1m'
-DIM='\033[2m'
-C_CYAN='\033[36m'
-C_BLUE='\033[34m'
-C_GREEN='\033[32m'
-C_YELLOW='\033[33m'
-C_RED='\033[31m'
-C_WHITE='\033[97m'
-C_GRAY='\033[90m'
-BG_BLUE='\033[44m'
-BG_CYAN='\033[46m'
+R=$'\033[0m'         # reset
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+C_CYAN=$'\033[36m'
+C_BLUE=$'\033[34m'
+C_GREEN=$'\033[32m'
+C_YELLOW=$'\033[33m'
+C_RED=$'\033[31m'
+C_WHITE=$'\033[97m'
+C_GRAY=$'\033[90m'
+BG_BLUE=$'\033[44m'
+BG_CYAN=$'\033[46m'
 
 # ══════════════════════════════════════════════════════
 #  HELPERS DE IMPRESIÓN
@@ -629,19 +629,49 @@ CHROOT_EOF
 do_finish() {
     screen "¡Instalación completa!" 6 6
 
-    ok "Desmontando particiones..."
+    # ── Copiar postinstall.sh al home del usuario ─────
+    # Busca postinstall.sh en el mismo directorio que este script.
+    # Si lo encuentra, lo copia al home del nuevo usuario y le da permisos
+    # para que esté listo para ejecutar después del primer boot.
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local postinstall_src="${script_dir}/postinstall.sh"
+    local user_home="/mnt/home/${USERNAME}"
+
+    if [[ -f "$postinstall_src" ]]; then
+        info "Copiando postinstall.sh al home de ${USERNAME}..."
+        cp "$postinstall_src" "${user_home}/postinstall.sh"
+        chmod +x "${user_home}/postinstall.sh"
+        arch-chroot /mnt chown "${USERNAME}:${USERNAME}" "/home/${USERNAME}/postinstall.sh"
+        ok "postinstall.sh listo en ~/postinstall.sh"
+    else
+        warn "No se encontró postinstall.sh junto a install.sh."
+        warn "Cópialo manualmente al home de ${USERNAME} después del boot."
+    fi
+
+    info "Desmontando particiones..."
     umount -R /mnt
     rm -f "$STATE_FILE"
 
-    echo
+    newline
     echo -e "  ${BOLD}${C_GREEN}✔  Arch Linux instalado exitosamente.${R}"
-    echo
-    echo -e "  ${C_GRAY}Resumen final:${R}"
-    echo -e "  ${C_GRAY}  Hostname  : ${BOLD}${C_WHITE}${HOSTNAME}${R}"
-    echo -e "  ${C_GRAY}  Usuario   : ${BOLD}${C_WHITE}${USERNAME}${R}  (sudo, zsh)"
-    echo -e "  ${C_GRAY}  Disco     : ${BOLD}${C_WHITE}${DISK}${R}"
-    echo -e "  ${C_GRAY}  Bootloader: GRUB  (ESP en /efi)${R}"
-    echo
+    newline
+    label
+
+    newline
+    echo -e "  ${BOLD}${C_CYAN}SISTEMA${R}"
+    echo -e "  ${C_GRAY}  ├─ Hostname    ${R}${BOLD}${HOSTNAME}${R}"
+    echo -e "  ${C_GRAY}  ├─ Usuario     ${R}${BOLD}${USERNAME}${R}${C_GRAY}  (sudo · zsh)${R}"
+    echo -e "  ${C_GRAY}  ├─ Disco       ${R}${BOLD}${DISK}${R}"
+    echo -e "  ${C_GRAY}  ├─ Bootloader  ${R}GRUB UEFI${C_GRAY}  (ESP en /efi)${R}"
+    echo -e "  ${C_GRAY}  └─ Filesystem  ${R}btrfs${C_GRAY}  · @ @home @snapshots @var_cache @var_log${R}"
+
+    newline
+    echo -e "  ${BOLD}${C_CYAN}PRÓXIMO PASO${R}"
+    echo -e "  ${C_GRAY}  1. Quita el USB / ISO${R}"
+    echo -e "  ${C_GRAY}  2. Reinicia e inicia sesión como ${R}${BOLD}${USERNAME}${R}"
+    echo -e "  ${C_GRAY}  3. Ejecuta ${R}${BOLD}./postinstall.sh${R}${C_GRAY} para instalar Hyprland y el entorno${R}"
+    newline
     label
     newline
 
@@ -652,7 +682,7 @@ do_finish() {
         sleep 3
         reboot
     else
-        warn "No olvides quitar el USB y reiniciar con: ${BOLD}reboot${R}"
+        warn "Reinicia cuando estés listo con: ${BOLD}reboot${R}"
     fi
 }
 

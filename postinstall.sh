@@ -527,7 +527,7 @@ finish() {
     label
     newline
     echo -e "  ${BOLD}${C_YELLOW}PRÓXIMOS PASOS${R}"
-    echo -e "  ${C_GRAY}  1. Creá ${R}${BOLD}~/.config/hypr/hyprland.lua${R}${C_GRAY} con tu config Lua${R}"
+    echo -e "  ${C_GRAY}  1. Creá ${R}${BOLD}~/.config/hypr/hyprland.conf${R}${C_GRAY} con tu config Lua${R}"
     echo -e "  ${C_GRAY}  2. Ejecutá ${R}${BOLD}nvim${R}${C_GRAY} para que LazyVim instale sus plugins${R}"
     echo -e "  ${C_GRAY}  3. Reiniciá para entrar a Hyprland desde SDDM${R}"
     newline
