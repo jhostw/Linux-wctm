@@ -176,6 +176,7 @@ PACMAN_PACKAGES=(
 
     # GTK settings (Wayland)
     nwg-look
+    gnome-themes-extra
 
     # Editor gráfico
     zed
