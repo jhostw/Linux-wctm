@@ -609,7 +609,7 @@ systemctl enable NetworkManager
 
 echo "==> Instalando GRUB (UEFI, /efi)..."
 # amd-ucode ya está instalado por pacstrap; grub-mkconfig lo detecta solo.
-grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=GRUB
+grub-install --target=x86_64-efi --efi-directory=/efi --bootloader-id=wctm
 grub-mkconfig -o /boot/grub/grub.cfg
 
 echo "==> Chroot listo."
