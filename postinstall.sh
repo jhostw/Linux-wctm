@@ -143,6 +143,10 @@ PACMAN_PACKAGES=(
 
     # Fuentes
     ttf-jetbrains-mono-nerd
+    noto-fonts
+    noto-fonts-cjk
+    noto-fonts-extra
+    noto-fonts-emoji
 
     # Gestor de archivos / visor
     yazi
@@ -161,7 +165,7 @@ PACMAN_PACKAGES=(
     grim slurp
 
     # Audio
-    pipewire wireplumber pipewire-pulse pipewire-alsa
+    pipewire wireplumber pipewire-pulse pipewire-alsa pipewire-jack
 
     # Display manager
     sddm
@@ -169,9 +173,6 @@ PACMAN_PACKAGES=(
     # Sistema
     power-profiles-daemon
     xdg-user-dirs
-
-    # Editor
-    neovim
 
     # GTK settings (Wayland)
     nwg-look
@@ -527,7 +528,7 @@ finish() {
     label
     newline
     echo -e "  ${BOLD}${C_YELLOW}PRÓXIMOS PASOS${R}"
-    echo -e "  ${C_GRAY}  1. Creá ${R}${BOLD}~/.config/hypr/hyprland.conf${R}${C_GRAY} con tu config Lua${R}"
+    echo -e "  ${C_GRAY}  1. Creá ${R}${BOLD}~/.config/hypr/hyprland.lua${R}${C_GRAY} con tu config Lua${R}"
     echo -e "  ${C_GRAY}  2. Ejecutá ${R}${BOLD}nvim${R}${C_GRAY} para que LazyVim instale sus plugins${R}"
     echo -e "  ${C_GRAY}  3. Reiniciá para entrar a Hyprland desde SDDM${R}"
     newline
