@@ -127,6 +127,14 @@ arrow_menu() {
 #  PAQUETES
 # ══════════════════════════════════════════════════════
 PACMAN_PACKAGES=(
+    # Drivers Gráficos AMD Ryzen (¡Añadidos aquí!)
+    mesa
+    lib32-mesa
+    vulkan-radeon
+    lib32-vulkan-radeon
+    libva-mesa-driver
+    libva-utils
+
     # Hyprland + portales
     hyprland
     xdg-desktop-portal-hyprland
