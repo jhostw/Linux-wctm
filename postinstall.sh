@@ -188,6 +188,9 @@ PACMAN_PACKAGES=(
 
     # Editor gráfico
     zed
+
+    # Languages
+    rustup
 )
 
 # ══════════════════════════════════════════════════════
